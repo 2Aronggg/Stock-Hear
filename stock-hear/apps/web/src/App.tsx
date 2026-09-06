@@ -18,11 +18,16 @@ export const App = () => {
   const [volume, setVolume] = useState(0.15);
   const sonification = useMemo(() => new Sonification(), []);
   const socketRef = useRef<MarketSocket | null>(null);
+  const soundEnabledRef = useRef(soundEnabled);
 
   useEffect(() => {
     sonification.setMuted(muted || !soundEnabled);
     sonification.setVolume(volume);
   }, [muted, sonification, soundEnabled, volume]);
+
+  useEffect(() => {
+  soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
 
   useEffect(() => {
     const socket = new MarketSocket({
@@ -32,7 +37,7 @@ export const App = () => {
       onMessage: (message: ServerSocketMessage) => {
         if (message.type === "trade") {
           setLatestTrade(message.trade);
-          if (soundEnabled) {
+          if (soundEnabledRef.current) {
             sonification.playTrade(message.trade);
           }
         }
@@ -42,8 +47,8 @@ export const App = () => {
     socketRef.current = socket;
     socket.connect();
     return () => socket.disconnect();
-  }, [sonification, soundEnabled, symbol]);
-
+  }, [sonification, symbol]);
+  
   const handleSymbolChange = (nextSymbol: string): void => {
     socketRef.current?.unsubscribe(symbol);
     socketRef.current?.subscribe(nextSymbol);
@@ -78,6 +83,7 @@ export const App = () => {
               onMutedChange={setMuted}
               onVolumeChange={setVolume}
               onSample={(direction) => sonification.playSample(direction)}
+              onVolumeSample={(volume) => sonification.playSample("flat", volume)}
             />
             <VoiceControls trade={latestTrade} onSoundEnabledChange={setSoundEnabled} />
           </div>
