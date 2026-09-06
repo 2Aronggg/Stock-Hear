@@ -1,7 +1,7 @@
 import type { MarketTrade } from "../market/types.js";
 
-const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
-const DEFAULT_MAX_TRADES_PER_SYMBOL = 10_000;
+const DEFAULT_RETENTION_MS = 60 * 60 * 1000;
+const DEFAULT_MAX_TRADES_PER_SYMBOL = 20_000;
 
 interface BufferedTrade {
   trade: MarketTrade;
