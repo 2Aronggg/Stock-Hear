@@ -7,6 +7,8 @@ const envSchema = z.object({
   KIS_REST_BASE_URL: z.string().url().optional(),
   KIS_WEBSOCKET_URL: z.string().url().optional(),
   KIS_ENVIRONMENT: z.enum(["real", "virtual"]).default("real"),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default("gemini-3.6-flash"),
   REPLAY_SAMPLE_WRITE_ENABLED: z
     .enum(["true", "false"])
     .default("false")
@@ -25,4 +27,3 @@ if (!parsedEnv.success) {
 export const config = parsedEnv.data;
 
 export const hasKisCredentials = (): boolean => Boolean(config.KIS_APP_KEY && config.KIS_APP_SECRET);
-
