@@ -3,6 +3,7 @@ import express from "express";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 
+import { parseAiIntent } from "./ai/intent.js";
 import { config } from "./config.js";
 import {
   KisRealtimeSocket,
@@ -136,6 +137,12 @@ app.get("/api/health", (_request, response) => {
     ),
     receivedAt: new Date().toISOString()
   });
+});
+
+app.post("/api/ai/intent", async (request, response) => {
+  const result = await parseAiIntent(request.body);
+
+  response.json(result);
 });
 
 app.post("/api/replay/samples/:symbol", async (request, response) => {
