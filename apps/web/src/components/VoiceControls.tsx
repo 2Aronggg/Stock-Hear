@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { requestAiIntent, replaySeconds, type AiIntent } from "../api/aiIntent";
 import { listenOnce, speak } from "../audio/speech";
 import { buildSonificationPlan, parseNaturalVoiceIntent } from "../audio/voiceIntent";
 import type {
@@ -8,7 +9,7 @@ import type {
   SonificationPlan,
   SoundEventLog
 } from "../types";
-import { getStockName } from "./StockSelector";
+import { getStockName, isSupportedSymbol } from "./StockSelector";
 
 interface VoiceControlsProps {
   currentSymbol: string;
@@ -19,7 +20,7 @@ interface VoiceControlsProps {
   onPreferencesChange: (preferences: ListeningPreferences) => void;
   onPlayCurrentTrade: (preferences: ListeningPreferences) => boolean;
   onReplayLast: () => boolean;
-  onReplayRecent: (windowSeconds: number) => boolean;
+  onReplayRecent: (windowSeconds: number, symbol?: string) => boolean;
   onSoundEnabledChange: (enabled: boolean) => void;
   onSymbolChange: (symbol: string) => void;
   onVolumeChange: (volume: number) => void;
@@ -103,6 +104,10 @@ export const VoiceControls = ({
   onVolumeChange
 }: VoiceControlsProps) => {
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
+  const [busy, setBusy] = useState(false);
+  const requestRef = useRef<AbortController | null>(null);
+  const previousUtterance = useRef<string | undefined>(undefined);
+  const pendingInfo = useRef<{ symbol: string; metrics: AiIntent["metrics"] } | null>(null);
   const [lastTranscript, setLastTranscript] = useState("아직 인식된 문장이 없습니다.");
   const [assistantMessage, setAssistantMessage] = useState(
     "예: 삼성전자 들려줘"
@@ -116,6 +121,33 @@ export const VoiceControls = ({
   const showOnly = (message: string): void => {
     setAssistantMessage(message);
   };
+
+  const readInfo = (value: RealtimeTrade, metrics: AiIntent["metrics"]): void => {
+    const fields = metrics.length ? metrics : ["price"];
+    const parts = fields.map((metric) => metric === "price"
+      ? `현재가 ${value.currentPrice.toLocaleString("ko-KR")}${value.currency === "USD" ? "달러" : "원"}`
+      : metric === "changeRate" ? `등락률 ${value.changeRate.toFixed(2)}퍼센트`
+      : `체결량 ${value.tradeVolume.toLocaleString("ko-KR")}주`);
+    speakAndShow(`${getStockName(value.symbol)}. ${parts.join(". ")}.`);
+  };
+
+  useEffect(() => {
+    const pending = pendingInfo.current;
+    if (!pending) return;
+    if (pending.symbol !== currentSymbol) { pendingInfo.current = null; return; }
+    if (trade?.symbol === pending.symbol) {
+      pendingInfo.current = null;
+      readInfo(trade, pending.metrics);
+    }
+  }, [trade, currentSymbol]);
+
+  useEffect(() => () => requestRef.current?.abort(), []);
+  useEffect(() => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+    setBusy(false);
+    previousUtterance.current = undefined;
+  }, [currentSymbol]);
 
   const applyPreferences = (nextPreferences: Partial<ListeningPreferences>): ListeningPreferences => {
     const updated = { ...preferences, ...nextPreferences };
@@ -158,7 +190,7 @@ export const VoiceControls = ({
 
     if (plan.action === "REPLAY_RECENT") {
       const seconds = Number(plan.timeRange.replace("s", "")) || 60;
-      const requested = onReplayRecent(seconds);
+      const requested = onReplayRecent(seconds, plan.symbol);
       showOnly(
         requested
           ? `${plan.stockName} 최근 ${seconds}초 구간 재생을 요청했습니다.`
@@ -218,7 +250,7 @@ export const VoiceControls = ({
     return true;
   };
 
-  const handleCommand = (transcript: string): void => {
+  const handleLocalCommand = (transcript: string): void => {
     setLastTranscript(transcript || "인식된 문장이 비어 있습니다.");
 
     if (handlePendingAnswer(transcript)) {
@@ -368,6 +400,87 @@ export const VoiceControls = ({
     speakAndShow("정확히 듣지 못했습니다. 다시 말씀해 주세요.");
   };
 
+  const executeAiIntent = (intent: AiIntent): void => {
+    if (intent.requiresConfirmation || intent.confidence < 0.5 || intent.action === "ASK_CLARIFICATION") {
+      speakAndShow(intent.clarificationQuestion || "종목과 원하는 동작을 구체적으로 말씀해 주세요.");
+      return;
+    }
+    const symbol = intent.symbol || currentSymbol;
+    if (!isSupportedSymbol(symbol)) {
+      speakAndShow("지원하지 않는 종목입니다. 다른 종목을 말씀해 주세요.");
+      return;
+    }
+    if (intent.action === "INFO") {
+      onSymbolChange(symbol);
+      if (trade?.symbol === symbol) readInfo(trade, intent.metrics);
+      else {
+        pendingInfo.current = { symbol, metrics: intent.metrics };
+        speakAndShow(`${getStockName(symbol)} 시세 수신 대기 중입니다.`);
+      }
+    } else if (intent.action === "START_REALTIME") {
+      startSession(symbol, getStockName(symbol), intent.thresholdRate != null ? "alerts-only"
+        : intent.metrics.includes("volume") ? "price-volume"
+        : intent.metrics.length ? "price-only" : preferences.mode, intent.thresholdRate);
+    } else if (intent.action === "STOP") {
+      onSoundEnabledChange(false);
+      speakAndShow("소리화를 중지했습니다.");
+    } else if (intent.action === "REPLAY_RECENT") {
+      const seconds = replaySeconds(intent.timeRange);
+      if (!seconds) { speakAndShow("최근 1분, 3분, 5분 중 선택해 주세요."); return; }
+      executeSonificationPlan({ action: "REPLAY_RECENT", symbol, stockName: getStockName(symbol), metrics: [], timeRange: `${seconds}s` });
+    } else if (intent.action === "REPLAY_LAST") {
+      if (lastSoundEvent?.symbol !== symbol) { speakAndShow("해당 종목의 최근 소리 기록이 없습니다."); return; }
+      executeSonificationPlan({ action: "REPLAY_LAST", symbol, stockName: getStockName(symbol), metrics: [], timeRange: "last-event" });
+    }
+  };
+
+  const executeLatest = useRef(executeAiIntent);
+  const fallbackLatest = useRef(handleLocalCommand);
+  executeLatest.current = executeAiIntent;
+  fallbackLatest.current = handleLocalCommand;
+
+  const handleCommand = async (transcript: string): Promise<void> => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+    pendingInfo.current = null;
+    setBusy(false);
+    if (!transcript.trim()) return;
+    setLastTranscript(transcript);
+    const local = parseNaturalVoiceIntent(transcript);
+    const normalized = normalizeCommand(transcript);
+    if (local.intent === "stop-sonification") {
+      setPendingQuestion(null);
+      onSoundEnabledChange(false);
+      speakAndShow("소리화를 중지했습니다.");
+      return;
+    }
+    if (pendingQuestion ||
+        local.intent === "set-preferences" || local.intent === "explain-last-sound" ||
+        /볼륨|소리크게|소리작게/.test(normalized)) {
+      handleLocalCommand(transcript);
+      return;
+    }
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 45000);
+    setBusy(true);
+    showOnly("질문을 해석하고 있습니다.");
+    try {
+      const context = { currentSymbol, currentStockName: getStockName(currentSymbol),
+        ...(previousUtterance.current ? { previousUtterance: previousUtterance.current } : {}) };
+      const intent = await requestAiIntent(transcript, context, controller.signal);
+      if (requestRef.current !== controller) return;
+      previousUtterance.current = transcript;
+      if (intent && intent.action !== "UNKNOWN") executeLatest.current(intent);
+      else fallbackLatest.current(transcript);
+    } catch {
+      if (requestRef.current === controller) fallbackLatest.current(transcript);
+    } finally {
+      window.clearTimeout(timeout);
+      if (requestRef.current === controller) { requestRef.current = null; setBusy(false); }
+    }
+  };
+
   const startListening = (): void => {
     const supported = listenOnce(handleCommand, () => undefined);
 
@@ -391,7 +504,7 @@ export const VoiceControls = ({
         <button className="voice-button" type="button" onClick={startListening}>
           누르고 말하기
         </button>
-        <div className="conversation-panel" aria-live="polite">
+        <div className="conversation-panel" aria-live="polite" aria-busy={busy}>
           <div className="message-card message-user">
             <span>인식 문장</span>
             <p>{lastTranscript}</p>

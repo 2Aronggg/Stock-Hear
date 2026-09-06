@@ -81,6 +81,7 @@ export const App = () => {
   const [lastSoundEvent, setLastSoundEvent] = useState<SoundEventLog | null>(null);
   const sonification = useMemo(() => new Sonification(), []);
   const socketRef = useRef<MarketSocket | null>(null);
+  const pendingReplay = useRef<{ symbol: string; seconds: 60 | 180 | 300 } | null>(null);
   const soundEnabledRef = useRef(soundEnabled);
 
   useEffect(() => {
@@ -99,6 +100,11 @@ export const App = () => {
       symbol,
       onStatusChange: setStatus,
       onMessage: (message: ServerSocketMessage) => {
+        if (message.type === "subscribed" && pendingReplay.current?.symbol === message.symbol) {
+          const pending = pendingReplay.current;
+          pendingReplay.current = null;
+          socket.replay(pending.symbol, pending.seconds);
+        }
         if (message.type === "replay_started") {
           setDataMode("demo");
           setReplayStatus("playing");
@@ -148,6 +154,8 @@ export const App = () => {
     }
 
     window.localStorage.setItem(selectedSymbolStorageKey, nextSymbol);
+    pendingReplay.current = null;
+    setLastSoundEvent(null);
     setLatestTrade(null);
     setDataMode("live");
     setReplayStatus("idle");
@@ -212,7 +220,7 @@ export const App = () => {
     return Boolean(soundEvent);
   };
 
-  const handleReplayRecent = (windowSeconds: number): boolean => {
+  const handleReplayRecent = (windowSeconds: number, targetSymbol = symbol): boolean => {
     if (
       windowSeconds !== 60 &&
       windowSeconds !== 180 &&
@@ -221,7 +229,13 @@ export const App = () => {
       return false;
     }
 
-    return socketRef.current?.replay(symbol, windowSeconds) ?? false;
+    if (!isSupportedSymbol(targetSymbol) || status !== "connected") return false;
+    if (targetSymbol !== symbol) {
+      handleSymbolChange(targetSymbol);
+      pendingReplay.current = { symbol: targetSymbol, seconds: windowSeconds };
+      return true;
+    }
+    return socketRef.current?.replay(targetSymbol, windowSeconds) ?? false;
   };
 
   return (

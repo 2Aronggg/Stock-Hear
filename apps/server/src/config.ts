@@ -8,7 +8,7 @@ const envSchema = z.object({
   KIS_WEBSOCKET_URL: z.string().url().optional(),
   KIS_ENVIRONMENT: z.enum(["real", "virtual"]).default("real"),
   GEMINI_API_KEY: z.string().optional(),
-  GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
+  GEMINI_MODEL: z.string().default("gemini-3.6-flash"),
   REPLAY_SAMPLE_WRITE_ENABLED: z
     .enum(["true", "false"])
     .default("false")
