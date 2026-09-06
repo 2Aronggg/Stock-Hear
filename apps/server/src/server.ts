@@ -3,6 +3,11 @@ import express from "express";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 
+import {
+  buildChartHistory,
+  getChartRangeMs,
+  parseChartRange
+} from "./chart/history.js";
 import { config } from "./config.js";
 import {
   KisRealtimeSocket,
@@ -27,11 +32,26 @@ type ClientMessage =
 
 type DataMode = "live" | "replay" | "demo";
 
+interface ReplayProgress {
+  symbol: string;
+  windowSeconds: 60 | 180 | 300;
+  sequence: number;
+  total: number;
+  sourceTradeCount: number;
+  dataMode: "replay" | "demo";
+  startedAt: string;
+}
+
 type ServerMessage =
   | { type: "connected"; receivedAt: string }
   | { type: "subscribed"; symbol: string; receivedAt: string }
   | { type: "unsubscribed"; symbol: string; receivedAt: string }
-  | { type: "trade"; trade: MarketTrade; dataMode: DataMode }
+  | {
+      type: "trade";
+      trade: MarketTrade;
+      dataMode: DataMode;
+      replay?: ReplayProgress;
+    }
   | {
       type: "replay_started";
       symbol: string;
@@ -136,6 +156,35 @@ app.get("/api/health", (_request, response) => {
     ),
     receivedAt: new Date().toISOString()
   });
+});
+
+app.get("/api/chart/history/:symbol", (request, response) => {
+  const symbol = request.params.symbol?.trim().toUpperCase();
+  const range = parseChartRange(request.query.range);
+
+  if (!symbol) {
+    response.status(400).json({
+      error: "A stock symbol is required."
+    });
+    return;
+  }
+
+  if (!range) {
+    response.status(400).json({
+      error: "range must be one of 5m, 30m, or 1h."
+    });
+    return;
+  }
+
+  const liveTrades = tradeBuffer.getRecent(
+    symbol,
+    getChartRangeMs(range)
+  );
+  const sample = replaySamples.get(symbol);
+
+  response.json(
+    buildChartHistory(symbol, range, liveTrades, sample)
+  );
 });
 
 app.post("/api/replay/samples/:symbol", async (request, response) => {
@@ -544,6 +593,7 @@ const startReplay = (
   }
 
   const session: ReplaySession = { timer: null };
+  const replayStartedAt = new Date().toISOString();
   replaySessions.set(socket, session);
 
   sendJson(socket, {
@@ -553,7 +603,7 @@ const startReplay = (
     tradeCount: replayTrades.length,
     sourceTradeCount: sourceTrades.length,
     dataMode,
-    receivedAt: new Date().toISOString()
+    receivedAt: replayStartedAt
   });
 
   let index = 0;
@@ -580,7 +630,16 @@ const startReplay = (
     sendJson(socket, {
       type: "trade",
       trade,
-      dataMode
+      dataMode,
+      replay: {
+        symbol,
+        windowSeconds,
+        sequence: index,
+        total: replayTrades.length,
+        sourceTradeCount: sourceTrades.length,
+        dataMode,
+        startedAt: replayStartedAt
+      }
     });
 
     index += 1;
